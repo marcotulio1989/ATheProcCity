@@ -941,7 +941,7 @@ function drawRoundedPolygon(ctx: CanvasRenderingContext2D, polygonInfo: { point:
         const dot = v1x * v2x + v1y * v2y;
         const angle = Math.acos(Math.max(-1, Math.min(1, dot / (segLen1 * segLen2))));
         
-        if (angle > Math.PI - 0.01 || angle === 0) { // No radius for straight or reflex angles
+        if (angle > Math.PI - 0.01) { // No radius for straight or reflex angles
             tangents.push({ p: p1, t1: p1, t2: p1, radius: 0 });
             continue;
         }
