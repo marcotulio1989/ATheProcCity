@@ -712,14 +712,17 @@ const isPointInPolygon = (point: Point, polygon: Point[]): boolean => {
  * @param block The block polygon (an array of points).
  * @returns An array of lots, where each lot is a footprint (an array of 4 points).
  */
-function generateLotsForBlock(block: Point[]): Point[][] {
-    if (block.length < 3) return [];
+function generateLotsForBlock(block: CityBlock): Point[][] {
+    const blockPoints = block.points;
+    if (blockPoints.length < 3) return [];
 
     const lots: Point[][] = [];
     const lotSize = 400; // The dimension of each square lot
+    const MIN_LOT_AREA = 10000; // Minimum area for a lot to be considered valid
+    const STREET_ACCESS_THRESHOLD_SQ = 80 * 80; // Allow lots to be up to 80 units away from street
 
     let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
-    block.forEach(p => {
+    blockPoints.forEach(p => {
         minX = Math.min(minX, p.x);
         minY = Math.min(minY, p.y);
         maxX = Math.max(maxX, p.x);
@@ -736,19 +739,36 @@ function generateLotsForBlock(block: Point[]): Point[][] {
                 { x: x, y: y + lotSize },
             ];
 
-            // A lot is valid only if all four of its corners are inside the block polygon.
-            // This ensures lots don't overlap with roads.
-            if (lotFootprint.every(p => isPointInPolygon(p, block))) {
+            // 1. A lot is valid if its center is inside the block polygon.
+            const lotCenter = { x: x + lotSize / 2, y: y + lotSize / 2 };
+            if (!isPointInPolygon(lotCenter, blockPoints)) {
+                continue;
+            }
+
+            // 2. Filter out lots that are too small.
+            const lotArea = lotSize * lotSize;
+            if (lotArea < MIN_LOT_AREA) {
+                continue;
+            }
+
+            // 3. Filter out lots that do not have street access.
+            let hasStreetAccess = false;
+            for (const vertex of lotFootprint) {
+                for (const segment of block.segments) {
+                    const dist2 = math.distanceToLine(vertex, segment.r.start, segment.r.end).distance2;
+                    if (dist2 < STREET_ACCESS_THRESHOLD_SQ) {
+                        hasStreetAccess = true;
+                        break;
+                    }
+                }
+                if (hasStreetAccess) break;
+            }
+
+            if (hasStreetAccess) {
                 lots.push(lotFootprint);
             }
         }
     }
-    
-    // The "street access" and "too small" filtering from the paper is implicitly handled:
-    // 1. Lots are of a fixed size, so we don't generate "too small" ones.
-    // 2. The requirement that all corners be inside the block means lots won't be in the 
-    //    isolated center of a huge block; they will naturally be near edges. This is a 
-    //    good approximation for "street access".
 
     return lots;
 }
@@ -758,7 +778,7 @@ function generateLotsForBlock(block: Point[]): Point[][] {
  * @param blocks An array of city block polygons.
  * @returns An array of Building objects.
  */
-function generateAllBuildings(blocks: Point[][]): Building[] {
+function generateAllBuildings(blocks: CityBlock[]): Building[] {
     const allBuildings: Building[] = [];
     const buildingPadding = 40; // Padding inside the lot to create space between buildings
 
@@ -917,7 +937,6 @@ function drawRoundedPolygon(ctx: CanvasRenderingContext2D, polygonInfo: { point:
     const points = isoPolygonInfo.map(info => info.point);
     const tangents: { p: Point; t1: Point; t2: Point; radius: number }[] = [];
 
-    // 1. Calculate tangent points and the maximum possible (clamped) radius for each corner
     for (let i = 0; i < points.length; i++) {
         const p1 = points[i];
         const p0 = points[(i + points.length - 1) % points.length];
@@ -931,9 +950,9 @@ function drawRoundedPolygon(ctx: CanvasRenderingContext2D, polygonInfo: { point:
         const segLen1 = Math.sqrt(v1x * v1x + v1y * v1y);
         const segLen2 = Math.sqrt(v2x * v2x + v2y * v2y);
         
-        let radius = isoPolygonInfo[i].radius;
+        const initialRadius = isoPolygonInfo[i].radius;
 
-        if (segLen1 === 0 || segLen2 === 0 || radius <= 0) {
+        if (segLen1 === 0 || segLen2 === 0 || initialRadius <= 0) {
             tangents.push({ p: p1, t1: p1, t2: p1, radius: 0 });
             continue;
         }
@@ -941,35 +960,34 @@ function drawRoundedPolygon(ctx: CanvasRenderingContext2D, polygonInfo: { point:
         const dot = v1x * v2x + v1y * v2y;
         const angle = Math.acos(Math.max(-1, Math.min(1, dot / (segLen1 * segLen2))));
         
-        if (angle > Math.PI - 0.01 || angle === 0) { // No radius for straight or reflex angles
+        if (angle > Math.PI - 0.01 || angle < 0.01) {
             tangents.push({ p: p1, t1: p1, t2: p1, radius: 0 });
             continue;
         }
 
         const tanHalfAngle = Math.tan(angle / 2);
-        const distToTangent = radius / tanHalfAngle;
+        
+        const maxRadius1 = (segLen1 / 2) * tanHalfAngle;
+        const maxRadius2 = (segLen2 / 2) * tanHalfAngle;
 
-        // Clamp distance to tangent to prevent curves from overlapping
-        const clampedDist = Math.min(distToTangent, segLen1 / 2, segLen2 / 2);
+        const clampedRadius = Math.min(initialRadius, maxRadius1, maxRadius2);
+        const distToTangent = clampedRadius / tanHalfAngle;
         
-        // This is the key: calculate the actual radius that can be drawn with the clamped distance
-        const clampedRadius = clampedDist * tanHalfAngle;
-        
-        const t1 = { x: p1.x + (clampedDist / segLen1) * v1x, y: p1.y + (clampedDist / segLen1) * v1y };
-        const t2 = { x: p1.x + (clampedDist / segLen2) * v2x, y: p1.y + (clampedDist / segLen2) * v2y };
+        const t1 = { x: p1.x + (distToTangent / segLen1) * v1x, y: p1.y + (distToTangent / segLen1) * v1y };
+        const t2 = { x: p1.x + (distToTangent / segLen2) * v2x, y: p1.y + (distToTangent / segLen2) * v2y };
         
         tangents.push({ p: p1, t1, t2, radius: clampedRadius });
     }
 
-    // 2. Draw the shape using the calculated points and clamped radii
     ctx.beginPath();
     const lastTan = tangents[tangents.length - 1];
+    if (!lastTan) return;
     ctx.moveTo(lastTan.t2.x, lastTan.t2.y);
 
     for (let i = 0; i < tangents.length; i++) {
         const tan = tangents[i];
         ctx.lineTo(tan.t1.x, tan.t1.y);
-        if (tan.radius > 0.1) { // Avoid calling arcTo with zero/tiny radius
+        if (tan.radius > 0.1) {
              ctx.arcTo(tan.p.x, tan.p.y, tan.t2.x, tan.t2.y, tan.radius);
         }
     }
@@ -1468,7 +1486,7 @@ const App: React.FC = () => {
             const blocksData = findCityBlocks(result.segments);
             setBlocks(blocksData);
             
-            const buildings = generateAllBuildings(blocksData.map(b => b.points));
+            const buildings = generateAllBuildings(blocksData);
             setBuildings(buildings);
 
             if (buildings.length > 0 && characterState.current) {
