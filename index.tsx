@@ -262,8 +262,8 @@ const math = {
 // --- ROAD GENERATION LOGIC ---
 
 const defaultConfig = {
-    HIGHWAY_SEGMENT_WIDTH: 1,
-    DEFAULT_SEGMENT_WIDTH: 1,
+    HIGHWAY_SEGMENT_WIDTH: 120,
+    DEFAULT_SEGMENT_WIDTH: 50,
     DEFAULT_SEGMENT_LENGTH: 1500,
     HIGHWAY_SEGMENT_LENGTH: 2500,
     MINIMUM_INTERSECTION_DEVIATION: 30,
@@ -1284,7 +1284,7 @@ const App: React.FC = () => {
 
             const highwayInsetDistance = 220;
             const streetInsetDistance = 80;
-            const cornerRadius = 30;
+            const cornerRadius = 80;
 
             blocks.forEach(({ points, segments }, index) => {
                 if (points.length < 3) return;
@@ -1368,8 +1368,8 @@ const App: React.FC = () => {
             });
         };
 
-        drawRoads();
         drawBlockContours();
+        drawRoads();
         drawBuildingsAndCharacter();
 
         ctx.restore();
