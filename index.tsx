@@ -267,6 +267,7 @@ const defaultConfig = {
     DEFAULT_SEGMENT_LENGTH: 1500,
     HIGHWAY_SEGMENT_LENGTH: 2500,
     MINIMUM_INTERSECTION_DEVIATION: 30,
+    MINIMUM_JUNCTION_DISTANCE: 400,
     ROAD_SNAP_DISTANCE: 400,
     RANDOM_STRAIGHT_ANGLE: () => (Math.random() - 0.5) * 2 * 10,
     RANDOM_BRANCH_ANGLE: () => (Math.random() - 0.5) * 2 * 20,
@@ -403,6 +404,22 @@ function addSegment(segment: Segment, segmentList: Segment[], qTree: Quadtree) {
 }
 
 function localConstraints(segment: Segment, segments: Segment[], qTree: Quadtree, config: typeof defaultConfig) {
+    const pointToKey = (p: Point) => `${p.x},${p.y}`;
+    const endpointCounts = new Map<string, number>();
+    for (const s of segments) {
+        const startKey = pointToKey(s.r.start);
+        const endKey = pointToKey(s.r.end);
+        endpointCounts.set(startKey, (endpointCounts.get(startKey) || 0) + 1);
+        endpointCounts.set(endKey, (endpointCounts.get(endKey) || 0) + 1);
+    }
+    const junctions = new Map<string, Point>();
+    for (const s of segments) {
+        const startKey = pointToKey(s.r.start);
+        if (endpointCounts.get(startKey)! > 1) junctions.set(startKey, s.r.start);
+        const endKey = pointToKey(s.r.end);
+        if (endpointCounts.get(endKey)! > 1) junctions.set(endKey, s.r.end);
+    }
+
     let action = { priority: 0, func: undefined as (() => boolean) | undefined, q: { t: 0 } };
     const matches = qTree.retrieve({
         x: Math.min(segment.r.start.x, segment.r.end.x) - config.ROAD_SNAP_DISTANCE,
@@ -423,6 +440,13 @@ function localConstraints(segment: Segment, segments: Segment[], qTree: Quadtree
                     action.priority = 4;
                     action.func = () => {
                         if (minDegreeDifference(other.dir(), segment.dir()) < config.MINIMUM_INTERSECTION_DEVIATION) return false;
+
+                        for (const j of junctions.values()) {
+                            if (math.length(intersection.point, j) < config.MINIMUM_JUNCTION_DISTANCE) {
+                                return false; // Too close to an existing junction
+                            }
+                        }
+
                         other.split(intersection.point, segment, segments, qTree);
                         segment.setEnd(intersection.point);
                         segment.q.severed = true;
@@ -1232,46 +1256,18 @@ const App: React.FC = () => {
 
         const { x, y, scale } = transformRef.current;
         
-        ctx.clearRect(0, 0, width, height);
+        // Explicitly set the background color for the roads
+        ctx.fillStyle = 'var(--surface-color)';
+        ctx.fillRect(0, 0, width, height);
+
         ctx.save();
         ctx.translate(x, y);
         ctx.scale(scale, scale);
 
         // --- RENDER FUNCTIONS ---
 
-        const drawRoads = () => {
-            const normalRoads = segments.filter(s => !s.q.highway);
-            const highways = segments.filter(s => s.q.highway);
-
-            const drawRoadsAsPolygons = (roads: Segment[], color: string) => {
-                ctx.fillStyle = color;
-                roads.forEach(seg => {
-                    const vec = math.subtractPoints(seg.r.end, seg.r.start);
-                    const length = Math.sqrt(vec.x * vec.x + vec.y * vec.y);
-                    if (length === 0) return;
-                    const perp = { x: -vec.y / length, y: vec.x / length };
-                    const halfWidth = seg.width / 2;
-                    const p1 = { x: seg.r.start.x + perp.x * halfWidth, y: seg.r.start.y + perp.y * halfWidth };
-                    const p2 = { x: seg.r.start.x - perp.x * halfWidth, y: seg.r.start.y - perp.y * halfWidth };
-                    const p3 = { x: seg.r.end.x - perp.x * halfWidth, y: seg.r.end.y - perp.y * halfWidth };
-                    const p4 = { x: seg.r.end.x + perp.x * halfWidth, y: seg.r.end.y + perp.y * halfWidth };
-                    const iso_p1 = math.toIsometric(p1);
-                    const iso_p2 = math.toIsometric(p2);
-                    const iso_p3 = math.toIsometric(p3);
-                    const iso_p4 = math.toIsometric(p4);
-                    ctx.beginPath();
-                    ctx.moveTo(iso_p1.x, iso_p1.y);
-                    ctx.lineTo(iso_p2.x, iso_p2.y);
-                    ctx.lineTo(iso_p3.x, iso_p3.y);
-                    ctx.lineTo(iso_p4.x, iso_p4.y);
-                    ctx.closePath();
-                    ctx.fill();
-                });
-            };
-
-            drawRoadsAsPolygons(highways, 'var(--highway-color)');
-            drawRoadsAsPolygons(normalRoads, 'var(--road-color)');
-        };
+        // The drawRoads function is removed in favor of the "negative space" rendering approach.
+        // The roads are now the background of the canvas, and the city blocks are drawn on top.
         
         const drawBlockContours = () => {
             const colors = [
@@ -1368,7 +1364,6 @@ const App: React.FC = () => {
             });
         };
 
-        drawRoads();
         drawBlockContours();
         drawBuildingsAndCharacter();
 
