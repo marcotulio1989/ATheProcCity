@@ -1,4 +1,3 @@
-
 import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { createRoot } from 'react-dom/client';
 
@@ -8,21 +7,9 @@ type Road = { start: Point; end: Point };
 type Q = { highway?: boolean; severed?: boolean };
 type Bounds = { x: number; y: number; width: number; height: number };
 type QuadtreeObject = Bounds & { o: Segment };
-type Building = {
-    footprint: Point[]; // The 4 corners of the rectangular base in world coordinates
-    height: number;
-};
-type CityBlock = {
-    points: Point[];
-    segments: Segment[];
-};
-
 
 // --- DEPENDENCY IMPLEMENTATIONS ---
 
-/**
- * A simple seeded pseudo-random number generator.
- */
 class SeededRandom {
     private seed: number;
     constructor(seedStr: string) {
@@ -48,9 +35,6 @@ class SeededRandom {
     }
 }
 
-/**
- * Simplex noise implementation.
- */
 const noise = (function() {
     const F2 = 0.5 * (Math.sqrt(3.0) - 1.0);
     const G2 = (3.0 - Math.sqrt(3.0)) / 6.0;
@@ -117,9 +101,6 @@ const noise = (function() {
     return { seed, simplex2 };
 })();
 
-/**
- * Quadtree implementation for spatial partitioning.
- */
 class Quadtree {
     private maxObjects: number;
     private maxLevels: number;
@@ -207,9 +188,6 @@ class Quadtree {
     }
 }
 
-/**
- * Collection of math utility functions.
- */
 const math = {
     subtractPoints: (a: Point, b: Point): Point => ({ x: a.x - b.x, y: a.y - b.y }),
     length: (a: Point, b: Point): number => Math.sqrt(Math.pow(a.x - b.x, 2) + Math.pow(a.y - b.y, 2)),
@@ -312,7 +290,6 @@ class Segment {
         if (this.dirRevision !== this.roadRevision) {
             this.dirRevision = this.roadRevision;
             const vector = math.subtractPoints(this.r.end, this.r.start);
-            // standard math angle: 0 is +X, 90 is +Y
             const angleRad = Math.atan2(vector.y, vector.x);
             this.cachedDir = math.toDegrees(angleRad);
         }
@@ -586,638 +563,18 @@ function generate(seed: string, options: Partial<typeof defaultConfig> = {}) {
     return { segments, logs };
 }
 
-function findCityBlocks(segments: Segment[]): CityBlock[] {
-    if (segments.length === 0) {
-        return [];
-    }
-
-    type Junction = {
-        point: Point;
-        segments: Segment[];
-    };
-
-    const junctions = new Map<string, Junction>();
-    const pointToKey = (p: Point) => `${p.x},${p.y}`;
-
-    // 1. Build junctions map
-    for (const seg of segments) {
-        const startKey = pointToKey(seg.r.start);
-        const endKey = pointToKey(seg.r.end);
-
-        if (!junctions.has(startKey)) {
-            junctions.set(startKey, { point: seg.r.start, segments: [] });
-        }
-        if (!junctions.has(endKey)) {
-            junctions.set(endKey, { point: seg.r.end, segments: [] });
-        }
-
-        junctions.get(startKey)!.segments.push(seg);
-        junctions.get(endKey)!.segments.push(seg);
-    }
-
-    // 2. Sort segments at each junction by angle
-    for (const junction of junctions.values()) {
-        junction.segments.sort((a, b) => {
-            const getOtherEnd = (seg: Segment, point: Point) => math.equalV(seg.r.start, point) ? seg.r.end : seg.r.start;
-            const angleA = Math.atan2(
-                getOtherEnd(a, junction.point).y - junction.point.y,
-                getOtherEnd(a, junction.point).x - junction.point.x
-            );
-            const angleB = Math.atan2(
-                getOtherEnd(b, junction.point).y - junction.point.y,
-                getOtherEnd(b, junction.point).x - junction.point.x
-            );
-            return angleA - angleB;
-        });
-    }
-
-    const faces: CityBlock[] = [];
-    const visitedHalfEdges = new Set<string>(); // Key: segment.id + "," + startPointKey
-
-    // 3. Face-finding traversal
-    for (const startJunction of junctions.values()) {
-        for (const startSegment of startJunction.segments) {
-            const startKey = pointToKey(startJunction.point);
-            const halfEdgeKey = `${startSegment.id},${startKey}`;
-
-            if (visitedHalfEdges.has(halfEdgeKey)) {
-                continue;
-            }
-
-            const newFace: Point[] = [];
-            const newFaceSegments: Segment[] = [];
-            let currentJunction = startJunction;
-            let currentSegment = startSegment;
-            let pathFound = false;
-
-            for (let i = 0; i < segments.length + 1; i++) { // Loop breaker
-                const currentKey = pointToKey(currentJunction.point);
-                const currentHalfEdgeKey = `${currentSegment.id},${currentKey}`;
-
-                if (visitedHalfEdges.has(currentHalfEdgeKey)) {
-                    break;
-                }
-                visitedHalfEdges.add(currentHalfEdgeKey);
-                newFace.push(currentJunction.point);
-                newFaceSegments.push(currentSegment);
-
-                const nextPoint = math.equalV(currentSegment.r.start, currentJunction.point)
-                    ? currentSegment.r.end
-                    : currentSegment.r.start;
-
-                const nextJunction = junctions.get(pointToKey(nextPoint));
-                if (!nextJunction) break;
-
-                const sortedSegments = nextJunction.segments;
-                const incomingIndex = sortedSegments.findIndex(s => s.id === currentSegment.id);
-
-                if (incomingIndex === -1) break;
-
-                const nextSegment = sortedSegments[(incomingIndex + 1) % sortedSegments.length];
-
-                currentJunction = nextJunction;
-                currentSegment = nextSegment;
-
-                if (currentSegment.id === startSegment.id && math.equalV(nextPoint, startJunction.point)) {
-                    pathFound = true;
-                    break;
-                }
-            }
-
-            if (pathFound && newFace.length > 2) {
-                faces.push({ points: newFace, segments: newFaceSegments });
-            }
-        }
-    }
-
-    console.log(`Found ${faces.length} faces.`);
-    return faces;
-}
-
-const isPointInPolygon = (point: Point, polygon: Point[]): boolean => {
-    let isInside = false;
-    for (let i = 0, j = polygon.length - 1; i < polygon.length; j = i++) {
-        const xi = polygon[i].x, yi = polygon[i].y;
-        const xj = polygon[j].x, yj = polygon[j].y;
-
-        const intersect = ((yi > point.y) !== (yj > point.y))
-            && (point.x < (xj - xi) * (point.y - yi) / (yj - yi) + xi);
-        if (intersect) isInside = !isInside;
-    }
-    return isInside;
-};
-
-/**
- * Subdivides a city block into smaller rectangular lots.
- * @param block The block polygon (an array of points).
- * @returns An array of lots, where each lot is a footprint (an array of 4 points).
- */
-function generateLotsForBlock(block: Point[]): Point[][] {
-    if (block.length < 3) return [];
-
-    const lots: Point[][] = [];
-    const lotSize = 400; // The dimension of each square lot
-
-    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
-    block.forEach(p => {
-        minX = Math.min(minX, p.x);
-        minY = Math.min(minY, p.y);
-        maxX = Math.max(maxX, p.x);
-        maxY = Math.max(maxY, p.y);
-    });
-    
-    // Create a grid over the bounding box
-    for (let y = minY; y < maxY; y += lotSize) {
-        for (let x = minX; x < maxX; x += lotSize) {
-            const lotFootprint: Point[] = [
-                { x: x, y: y },
-                { x: x + lotSize, y: y },
-                { x: x + lotSize, y: y + lotSize },
-                { x: x, y: y + lotSize },
-            ];
-
-            // A lot is valid only if all four of its corners are inside the block polygon.
-            // This ensures lots don't overlap with roads.
-            if (lotFootprint.every(p => isPointInPolygon(p, block))) {
-                lots.push(lotFootprint);
-            }
-        }
-    }
-    
-    // The "street access" and "too small" filtering from the paper is implicitly handled:
-    // 1. Lots are of a fixed size, so we don't generate "too small" ones.
-    // 2. The requirement that all corners be inside the block means lots won't be in the 
-    //    isolated center of a huge block; they will naturally be near edges. This is a 
-    //    good approximation for "street access".
-
-    return lots;
-}
-
-/**
- * Generates buildings for all city blocks by first subdividing them into lots.
- * @param blocks An array of city block polygons.
- * @returns An array of Building objects.
- */
-function generateAllBuildings(blocks: Point[][]): Building[] {
-    const allBuildings: Building[] = [];
-    const buildingPadding = 40; // Padding inside the lot to create space between buildings
-
-    for (const block of blocks) {
-        const lots = generateLotsForBlock(block);
-
-        for (const lot of lots) {
-            // Create a building footprint slightly smaller than the lot
-            const footprint: Point[] = [
-                { x: lot[0].x + buildingPadding, y: lot[0].y + buildingPadding },
-                { x: lot[1].x - buildingPadding, y: lot[1].y + buildingPadding },
-                { x: lot[2].x - buildingPadding, y: lot[2].y - buildingPadding },
-                { x: lot[3].x + buildingPadding, y: lot[3].y - buildingPadding },
-            ];
-            
-            const newBuilding = {
-                footprint,
-                height: Math.random() * 800 + 200,
-            };
-            allBuildings.push(newBuilding);
-        }
-    }
-    
-    console.log(`Generated ${allBuildings.length} buildings based on subdivided lots.`);
-    return allBuildings;
-}
-
-
-// --- BLOCK RENDERING HELPERS ---
-
-/**
- * Calculates the intersection point of two lines defined by two points each.
- * @returns The intersection point, or null if lines are parallel.
- */
-function lineLineIntersection(p1: Point, p2: Point, p3: Point, p4: Point): Point | null {
-    const d = (p1.x - p2.x) * (p3.y - p4.y) - (p1.y - p2.y) * (p3.x - p4.x);
-    if (d === 0) return null;
-    const t = ((p1.x - p3.x) * (p3.y - p4.y) - (p1.y - p3.y) * (p3.x - p4.x)) / d;
-    return {
-        x: p1.x + t * (p2.x - p1.x),
-        y: p1.y + t * (p2.y - p1.y),
-    };
-}
-
-/**
- * Creates an inset polygon from a given polygon.
- * This version bevels sharp corners and calculates a dynamic radius for each corner
- * based on its angle, returning a structure ready for rendering.
- * @param polygon The array of points defining the polygon.
- * @param segments The road segments corresponding to each polygon edge.
- * @param distances The distances to inset for highway and street edges.
- * @param baseRadius The base radius for a 90-degree corner.
- * @returns An array of objects, each containing a point and its calculated corner radius.
- */
-function insetPolygon(
-    polygon: Point[],
-    segments: Segment[],
-    distances: { highway: number; street: number },
-    baseRadius: number
-): { point: Point; radius: number }[] {
-    if (polygon.length < 3) return [];
-
-    let area = 0;
-    for (let i = 0; i < polygon.length; i++) {
-        const p1 = polygon[i];
-        const p2 = polygon[(i + 1) % polygon.length];
-        area += p1.x * p2.y - p2.x * p1.y;
-    }
-    const sign = Math.sign(area);
-
-    const offsetLines: [Point, Point][] = [];
-    for (let i = 0; i < polygon.length; i++) {
-        const p1 = polygon[i];
-        const p2 = polygon[(i + 1) % polygon.length];
-        const segment = segments[i];
-        const distance = (segment && segment.q.highway) ? distances.highway : distances.street;
-        const dx = p2.x - p1.x;
-        const dy = p2.y - p1.y;
-        const len = Math.sqrt(dx * dx + dy * dy);
-        if (len === 0) continue;
-        const normalX = dy / len;
-        const normalY = -dx / len;
-        const offsetX = -sign * normalX * distance;
-        const offsetY = -sign * normalY * distance;
-        offsetLines.push([
-            { x: p1.x + offsetX, y: p1.y + offsetY },
-            { x: p2.x + offsetX, y: p2.y + offsetY }
-        ]);
-    }
-
-    if (offsetLines.length < 3) return [];
-
-    const insetVertices: { point: Point; radius: number }[] = [];
-    const miterLimit = 4.0;
-
-    for (let i = 0; i < offsetLines.length; i++) {
-        const p_curr = polygon[i];
-        const prevLine = offsetLines[(i + offsetLines.length - 1) % offsetLines.length];
-        const currLine = offsetLines[i];
-
-        const prevSegment = segments[(i + polygon.length - 1) % polygon.length];
-        const currSegment = segments[i];
-        const distance1 = (prevSegment && prevSegment.q.highway) ? distances.highway : distances.street;
-        const distance2 = (currSegment && currSegment.q.highway) ? distances.highway : distances.street;
-        const avgDistance = (distance1 + distance2) / 2;
-
-        const intersection = lineLineIntersection(prevLine[0], prevLine[1], currLine[0], currLine[1]);
-
-        if (intersection) {
-            const miterLength = math.length(p_curr, intersection);
-
-            if (miterLength > avgDistance * miterLimit) {
-                insetVertices.push({ point: prevLine[1], radius: 0 });
-                insetVertices.push({ point: currLine[0], radius: 0 });
-            } else {
-                const p_prev = polygon[(i + polygon.length - 1) % polygon.length];
-                const p_next = polygon[(i + 1) % polygon.length];
-                const v1 = math.subtractPoints(p_prev, p_curr);
-                const v2 = math.subtractPoints(p_next, p_curr);
-                const dot = v1.x * v2.x + v1.y * v2.y;
-                const len1 = Math.sqrt(v1.x * v1.x + v1.y * v1.y);
-                const len2 = Math.sqrt(v2.x * v2.x + v2.y * v2.y);
-                
-                let dynamicRadius = baseRadius;
-                if (len1 > 0 && len2 > 0) {
-                    const cosAngle = Math.max(-1, Math.min(1, dot / (len1 * len2)));
-                    const angle = Math.acos(cosAngle);
-                    const scale = angle / (Math.PI / 2);
-                    dynamicRadius = baseRadius * Math.min(scale, 1.5);
-                }
-                insetVertices.push({ point: intersection, radius: dynamicRadius });
-            }
-        } else {
-            insetVertices.push({ point: prevLine[1], radius: 0 });
-            insetVertices.push({ point: currLine[0], radius: 0 });
-        }
-    }
-    return insetVertices;
-}
-
-/**
- * Draws a polygon with individually specified rounded corners on a canvas context.
- * This version calculates a geometry-aware clamped radius and uses arcTo to
- * produce robust, artifact-free corners.
- * @param ctx The canvas rendering context.
- * @param polygonInfo An array of objects, each with a point and a corner radius.
- */
-function drawRoundedPolygon(ctx: CanvasRenderingContext2D, polygonInfo: { point: Point; radius: number }[]) {
-    if (polygonInfo.length < 3) return;
-
-    const isoPolygonInfo = polygonInfo.map(info => ({
-        point: math.toIsometric(info.point),
-        radius: info.radius
-    }));
-
-    const points = isoPolygonInfo.map(info => info.point);
-    const tangents: { p: Point; t1: Point; t2: Point; radius: number }[] = [];
-
-    // 1. Calculate tangent points and the maximum possible (clamped) radius for each corner
-    for (let i = 0; i < points.length; i++) {
-        const p1 = points[i];
-        const p0 = points[(i + points.length - 1) % points.length];
-        const p2 = points[(i + 1) % points.length];
-        
-        const v1x = p0.x - p1.x;
-        const v1y = p0.y - p1.y;
-        const v2x = p2.x - p1.x;
-        const v2y = p2.y - p1.y;
-
-        const segLen1 = Math.sqrt(v1x * v1x + v1y * v1y);
-        const segLen2 = Math.sqrt(v2x * v2x + v2y * v2y);
-        
-        let radius = isoPolygonInfo[i].radius;
-
-        if (segLen1 === 0 || segLen2 === 0 || radius <= 0) {
-            tangents.push({ p: p1, t1: p1, t2: p1, radius: 0 });
-            continue;
-        }
-        
-        const dot = v1x * v2x + v1y * v2y;
-        const angle = Math.acos(Math.max(-1, Math.min(1, dot / (segLen1 * segLen2))));
-        
-        if (angle > Math.PI - 0.01 || angle === 0) { // No radius for straight or reflex angles
-            tangents.push({ p: p1, t1: p1, t2: p1, radius: 0 });
-            continue;
-        }
-
-        const tanHalfAngle = Math.tan(angle / 2);
-        const distToTangent = radius / tanHalfAngle;
-
-        // Clamp distance to tangent to prevent curves from overlapping
-        const clampedDist = Math.min(distToTangent, segLen1 / 2, segLen2 / 2);
-        
-        // This is the key: calculate the actual radius that can be drawn with the clamped distance
-        const clampedRadius = clampedDist * tanHalfAngle;
-        
-        const t1 = { x: p1.x + (clampedDist / segLen1) * v1x, y: p1.y + (clampedDist / segLen1) * v1y };
-        const t2 = { x: p1.x + (clampedDist / segLen2) * v2x, y: p1.y + (clampedDist / segLen2) * v2y };
-        
-        tangents.push({ p: p1, t1, t2, radius: clampedRadius });
-    }
-
-    // 2. Draw the shape using the calculated points and clamped radii
-    ctx.beginPath();
-    const lastTan = tangents[tangents.length - 1];
-    ctx.moveTo(lastTan.t2.x, lastTan.t2.y);
-
-    for (let i = 0; i < tangents.length; i++) {
-        const tan = tangents[i];
-        ctx.lineTo(tan.t1.x, tan.t1.y);
-        if (tan.radius > 0.1) { // Avoid calling arcTo with zero/tiny radius
-             ctx.arcTo(tan.p.x, tan.p.y, tan.t2.x, tan.t2.y, tan.radius);
-        }
-    }
-    
-    ctx.closePath();
-    ctx.fill();
-}
-
-
-// --- CHARACTER LOGIC ---
-const useCharacter = () => {
-    const [isImageLoaded, setIsImageLoaded] = useState(false);
-    const characterState = useRef({
-        position: { x: 0, y: 0 } as Point,
-        speed: 400, // units per second
-        image: null as HTMLImageElement | null,
-        rotation: 0,
-    });
-
-    const keys = useRef({
-        ArrowUp: false,
-        ArrowDown: false,
-        ArrowLeft: false,
-        ArrowRight: false,
-    });
-
-    useEffect(() => {
-        const image = new Image();
-        image.src = 'https://raw.githubusercontent.com/eerkek/personal-code-assistant-app/main/assets/car.png';
-        image.onload = () => {
-            characterState.current.image = image;
-            setIsImageLoaded(true);
-        };
-
-        const handleKeyDown = (e: KeyboardEvent) => {
-            if (e.key in keys.current) {
-                (keys.current as any)[e.key] = true;
-            }
-        };
-
-        const handleKeyUp = (e: KeyboardEvent) => {
-            if (e.key in keys.current) {
-                (keys.current as any)[e.key] = false;
-            }
-        };
-
-        window.addEventListener('keydown', handleKeyDown);
-        window.addEventListener('keyup', handleKeyUp);
-
-        return () => {
-            window.removeEventListener('keydown', handleKeyDown);
-            window.removeEventListener('keyup', handleKeyUp);
-        };
-    }, []);
-
-    const updateCharacter = (deltaTime: number) => {
-        const state = characterState.current;
-        const keysPressed = keys.current;
-
-        if (!state.position) {
-            return;
-        }
-
-        const speed = state.speed * deltaTime;
-        let screen_dx = 0;
-        let screen_dy = 0;
-
-        if (keysPressed.ArrowUp) {
-            screen_dy = -1;
-        }
-        if (keysPressed.ArrowDown) {
-            screen_dy = 1;
-        }
-        if (keysPressed.ArrowLeft) {
-            screen_dx = -1;
-        }
-        if (keysPressed.ArrowRight) {
-            screen_dx = 1;
-        }
-
-        if (screen_dx !== 0 || screen_dy !== 0) {
-            const screen_vec = { x: screen_dx, y: screen_dy };
-            const world_vec = math.fromIsometric(screen_vec);
-
-            const len = Math.sqrt(world_vec.x * world_vec.x + world_vec.y * world_vec.y);
-            if (len > 0) {
-                const dx = (world_vec.x / len) * speed;
-                const dy = (world_vec.y / len) * speed;
-
-                state.position.x += dx;
-                state.position.y += dy;
-                state.rotation = Math.atan2(dy, dx) * 180 / Math.PI;
-            }
-        }
-    };
-
-    const drawCharacter = (ctx: CanvasRenderingContext2D, transform: { x: number, y: number, scale: number }) => {
-        const state = characterState.current;
-        if (!state.position) return;
-
-        const carSize = 64;
-        const isoPos = math.toIsometric(state.position);
-
-        ctx.save();
-        ctx.translate(isoPos.x, isoPos.y);
-        ctx.rotate(state.rotation * Math.PI / 180);
-
-        if (state.image) {
-            ctx.drawImage(state.image, -carSize / 2, -carSize / 2, carSize, carSize);
-        } else {
-            // Fallback circle
-            ctx.beginPath();
-            ctx.arc(0, 0, carSize / 2, 0, 2 * Math.PI);
-            ctx.fillStyle = 'blue';
-            ctx.fill();
-        }
-        ctx.restore();
-    };
-
-    return { updateCharacter, drawCharacter, characterState };
-};
-
-
 // --- REACT COMPONENT ---
 
 const App: React.FC = () => {
     const [seed, setSeed] = useState<string>('city');
     const [segments, setSegments] = useState<Segment[]>([]);
-    const [blocks, setBlocks] = useState<CityBlock[]>([]);
-    const [buildings, setBuildings] = useState<Building[]>([]);
     const [logs, setLogs] = useState<string[]>([]);
-    const [charPos, setCharPos] = useState<Point>({ x: 0, y: 0 });
     const [isLoading, setIsLoading] = useState<boolean>(false);
     const [canvasSize, setCanvasSize] = useState({ width: 0, height: 0 });
-    const [zoom, setZoom] = useState<number>(1);
-    const [showBuildings, setShowBuildings] = useState<boolean>(true);
     
     const canvasRef = useRef<HTMLCanvasElement>(null);
-    const minimapCanvasRef = useRef<HTMLCanvasElement>(null);
     const transformRef = useRef({ x: 0, y: 0, scale: 1 });
-    const baseScaleRef = useRef(1);
     const animationFrameId = useRef<number | null>(null);
-    const lastTimestamp = useRef(0);
-
-    const { updateCharacter, drawCharacter, characterState } = useCharacter();
-
-    const drawMinimap = useCallback(() => {
-        const minimapCanvas = minimapCanvasRef.current;
-        if (!minimapCanvas || segments.length === 0) return;
-
-        const minimapCtx = minimapCanvas.getContext('2d');
-        if (!minimapCtx) return;
-
-        const { width, height } = minimapCanvas;
-        minimapCanvas.width = width;
-        minimapCanvas.height = height;
-
-        // 1. Find bounds of all roads
-        let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
-        segments.forEach(seg => {
-            minX = Math.min(minX, seg.r.start.x, seg.r.end.x);
-            minY = Math.min(minY, seg.r.start.y, seg.r.end.y);
-            maxX = Math.max(maxX, seg.r.start.x, seg.r.end.x);
-            maxY = Math.max(maxY, seg.r.start.y, seg.r.end.y);
-        });
-        
-        if (minX === Infinity) return; // No segments with points
-
-        // Add some padding
-        const padding = 2000;
-        minX -= padding;
-        minY -= padding;
-        maxX += padding;
-        maxY += padding;
-
-        const mapWidth = maxX - minX;
-        const mapHeight = maxY - minY;
-
-        // 2. Calculate scale and offset
-        const scaleX = width / mapWidth;
-        const scaleY = height / mapHeight;
-        const scale = Math.min(scaleX, scaleY);
-        
-        if (!isFinite(scale) || scale <= 0) {
-            minimapCtx.clearRect(0, 0, width, height);
-            return; // Cannot draw if scale is invalid
-        }
-
-        const offsetX = (width - mapWidth * scale) / 2 - minX * scale;
-        const offsetY = (height - mapHeight * scale) / 2 - minY * scale;
-
-        minimapCtx.clearRect(0, 0, width, height);
-        minimapCtx.save();
-        minimapCtx.translate(offsetX, offsetY);
-        minimapCtx.scale(scale, scale);
-
-        // 3. Draw roads
-        const normalRoads = segments.filter(s => !s.q.highway);
-        const highways = segments.filter(s => s.q.highway);
-
-        const roadWidth = (1 / scale) * 0.75; // Target 0.75px width
-        const highwayWidth = (1 / scale) * 1.25; // Target 1.25px width for highways
-
-        minimapCtx.strokeStyle = '#888888';
-        minimapCtx.lineWidth = roadWidth;
-        minimapCtx.lineCap = "round";
-        minimapCtx.beginPath();
-        normalRoads.forEach(seg => {
-            minimapCtx.moveTo(seg.r.start.x, seg.r.start.y);
-            minimapCtx.lineTo(seg.r.end.x, seg.r.end.y);
-        });
-        minimapCtx.stroke();
-
-        minimapCtx.strokeStyle = '#f5a623';
-        minimapCtx.lineWidth = highwayWidth;
-        minimapCtx.lineCap = "round";
-        minimapCtx.beginPath();
-        highways.forEach(seg => {
-            minimapCtx.moveTo(seg.r.start.x, seg.r.start.y);
-            minimapCtx.lineTo(seg.r.end.x, seg.r.end.y);
-        });
-        minimapCtx.stroke();
-
-        // 4. Draw character
-        const charPos = characterState.current.position;
-        if (charPos) {
-            minimapCtx.fillStyle = 'red';
-            minimapCtx.beginPath();
-            minimapCtx.arc(charPos.x, charPos.y, (1 / scale) * 5, 0, 2 * Math.PI); // Target 5px radius
-            minimapCtx.fill();
-        }
-
-        // 5. Draw viewport
-        const mainTransform = transformRef.current;
-        const { width: mainWidth, height: mainHeight } = canvasSize;
-
-        const viewRectWorldX = (mainWidth / 2 - mainTransform.x) / mainTransform.scale - mainWidth / (2 * mainTransform.scale);
-        const viewRectWorldY = (mainHeight / 2 - mainTransform.y) / mainTransform.scale - mainHeight / (2 * mainTransform.scale);
-        const viewRectWorldWidth = mainWidth / mainTransform.scale;
-        const viewRectWorldHeight = mainHeight / mainTransform.scale;
-
-        minimapCtx.strokeStyle = 'black';
-        minimapCtx.lineWidth = (1 / scale) * 1; // Target 1px width
-        minimapCtx.strokeRect(viewRectWorldX, viewRectWorldY, viewRectWorldWidth, viewRectWorldHeight);
-
-        minimapCtx.restore();
-
-    }, [segments, characterState, canvasSize]);
 
     const draw = useCallback(() => {
         const canvas = canvasRef.current;
@@ -1237,167 +594,34 @@ const App: React.FC = () => {
         ctx.translate(x, y);
         ctx.scale(scale, scale);
 
-        // --- RENDER FUNCTIONS ---
-
         const drawRoads = () => {
             const normalRoads = segments.filter(s => !s.q.highway);
             const highways = segments.filter(s => s.q.highway);
 
-            const drawRoadsAsPolygons = (roads: Segment[], color: string) => {
-                ctx.fillStyle = color;
+            const drawStrokedRoads = (roads: Segment[], color: string, width: number) => {
+                ctx.strokeStyle = color;
+                ctx.lineWidth = width;
+                ctx.lineJoin = "round";
+                ctx.lineCap = "round";
+                ctx.beginPath();
                 roads.forEach(seg => {
-                    const vec = math.subtractPoints(seg.r.end, seg.r.start);
-                    const length = Math.sqrt(vec.x * vec.x + vec.y * vec.y);
-                    if (length === 0) return;
-                    const perp = { x: -vec.y / length, y: vec.x / length };
-                    const halfWidth = seg.width / 2;
-                    const p1 = { x: seg.r.start.x + perp.x * halfWidth, y: seg.r.start.y + perp.y * halfWidth };
-                    const p2 = { x: seg.r.start.x - perp.x * halfWidth, y: seg.r.start.y - perp.y * halfWidth };
-                    const p3 = { x: seg.r.end.x - perp.x * halfWidth, y: seg.r.end.y - perp.y * halfWidth };
-                    const p4 = { x: seg.r.end.x + perp.x * halfWidth, y: seg.r.end.y + perp.y * halfWidth };
-                    const iso_p1 = math.toIsometric(p1);
-                    const iso_p2 = math.toIsometric(p2);
-                    const iso_p3 = math.toIsometric(p3);
-                    const iso_p4 = math.toIsometric(p4);
-                    ctx.beginPath();
-                    ctx.moveTo(iso_p1.x, iso_p1.y);
-                    ctx.lineTo(iso_p2.x, iso_p2.y);
-                    ctx.lineTo(iso_p3.x, iso_p3.y);
-                    ctx.lineTo(iso_p4.x, iso_p4.y);
-                    ctx.closePath();
-                    ctx.fill();
+                    const iso_start = math.toIsometric(seg.r.start);
+                    const iso_end = math.toIsometric(seg.r.end);
+                    ctx.moveTo(iso_start.x, iso_start.y);
+                    ctx.lineTo(iso_end.x, iso_end.y);
                 });
+                ctx.stroke();
             };
 
-            drawRoadsAsPolygons(highways, 'var(--highway-color)');
-            drawRoadsAsPolygons(normalRoads, 'var(--road-color)');
-        };
-        
-        const drawBlockContours = () => {
-            const colors = [
-                'rgba(165, 93, 40, 0.8)',   // Brown/Orange
-                'rgba(48, 130, 132, 0.8)',  // Teal
-                'rgba(10, 80, 81, 0.8)',    // Dark Teal
-                'rgba(141, 106, 54, 0.8)',  // Tan
-                'rgba(82, 121, 111, 0.8)',  // Muted Green
-            ];
-
-            const highwayInsetDistance = 220;
-            const streetInsetDistance = 80;
-            const cornerRadius = 80;
-
-            blocks.forEach(({ points, segments }, index) => {
-                if (points.length < 3) return;
-                
-                const insetBlockInfo = insetPolygon(points, segments, {
-                    highway: highwayInsetDistance,
-                    street: streetInsetDistance
-                }, cornerRadius);
-                if (insetBlockInfo.length < 3) return;
-
-                ctx.fillStyle = colors[index % colors.length];
-                drawRoundedPolygon(ctx, insetBlockInfo);
-            });
+            drawStrokedRoads(highways, 'var(--highway-color)', defaultConfig.HIGHWAY_SEGMENT_WIDTH);
+            drawStrokedRoads(normalRoads, 'var(--road-color)', defaultConfig.DEFAULT_SEGMENT_WIDTH);
         };
 
-        const drawBuildingsAndCharacter = () => {
-            type Renderable = {
-                zIndex: number;
-                type: 'building' | 'character';
-                data: Building | { position: Point };
-            };
-            const renderables: Renderable[] = [];
-
-            if (showBuildings) {
-                buildings.forEach(b => {
-                    const centerX = b.footprint.reduce((sum, p) => sum + p.x, 0) / 4;
-                    const centerY = b.footprint.reduce((sum, p) => sum + p.y, 0) / 4;
-                    renderables.push({ zIndex: centerX + centerY, type: 'building', data: b });
-                });
-            }
-
-            if (characterState.current.position) {
-                const charPos = characterState.current.position;
-                renderables.push({ zIndex: charPos.x + charPos.y, type: 'character', data: { position: charPos } });
-            }
-
-            renderables.sort((a, b) => a.zIndex - b.zIndex);
-
-            renderables.forEach(r => {
-                if (r.type === 'building') {
-                    const building = r.data as Building;
-                    const { footprint, height } = building;
-                    const base_iso = footprint.map(math.toIsometric);
-                    const top_iso = footprint.map(p => {
-                        const iso = math.toIsometric(p);
-                        iso.y -= height;
-                        return iso;
-                    });
-                    ctx.strokeStyle = '#222222';
-                    ctx.lineWidth = 2;
-                    ctx.fillStyle = '#555555';
-                    ctx.beginPath();
-                    ctx.moveTo(base_iso[1].x, base_iso[1].y);
-                    ctx.lineTo(base_iso[2].x, base_iso[2].y);
-                    ctx.lineTo(top_iso[2].x, top_iso[2].y);
-                    ctx.lineTo(top_iso[1].x, top_iso[1].y);
-                    ctx.closePath();
-                    ctx.fill();
-                    ctx.stroke();
-                    ctx.fillStyle = '#666666';
-                    ctx.beginPath();
-                    ctx.moveTo(base_iso[2].x, base_iso[2].y);
-                    ctx.lineTo(base_iso[3].x, base_iso[3].y);
-                    ctx.lineTo(top_iso[3].x, top_iso[3].y);
-                    ctx.lineTo(top_iso[2].x, top_iso[2].y);
-                    ctx.closePath();
-                    ctx.fill();
-                    ctx.stroke();
-                    ctx.fillStyle = '#8a8a8a';
-                    ctx.beginPath();
-                    ctx.moveTo(top_iso[0].x, top_iso[0].y);
-                    ctx.lineTo(top_iso[1].x, top_iso[1].y);
-                    ctx.lineTo(top_iso[2].x, top_iso[2].y);
-                    ctx.lineTo(top_iso[3].x, top_iso[3].y);
-                    ctx.closePath();
-                    ctx.fill();
-                    ctx.stroke();
-                } else if (r.type === 'character') {
-                    drawCharacter(ctx, transformRef.current);
-                }
-            });
-        };
-
-        drawBlockContours();
         drawRoads();
-        drawBuildingsAndCharacter();
 
         ctx.restore();
 
-        drawMinimap();
-    }, [segments, blocks, buildings, canvasSize, drawCharacter, drawMinimap, characterState, showBuildings]);
-
-    const gameLoop = useCallback((timestamp: number) => {
-        const deltaTime = (timestamp - lastTimestamp.current) / 1000;
-        lastTimestamp.current = timestamp;
-
-        updateCharacter(deltaTime);
-        setCharPos({ ...characterState.current.position });
-
-        transformRef.current.scale = baseScaleRef.current * zoom;
-
-        if (characterState.current.position) {
-            const { width: canvasWidth, height: canvasHeight } = canvasSize;
-            const scale = transformRef.current.scale;
-            const isoPos = math.toIsometric(characterState.current.position);
-            transformRef.current.x = canvasWidth / 2 - isoPos.x * scale;
-            transformRef.current.y = canvasHeight / 2 - isoPos.y * scale;
-        }
-
-        draw();
-
-        animationFrameId.current = requestAnimationFrame(gameLoop);
-    }, [draw, updateCharacter, canvasSize, characterState, setCharPos, zoom]);
+    }, [segments, canvasSize]);
 
     useEffect(() => {
         const canvas = canvasRef.current;
@@ -1418,44 +642,22 @@ const App: React.FC = () => {
         const { width: canvasWidth, height: canvasHeight } = canvasSize;
         if (canvasWidth === 0 || canvasHeight === 0) return;
         const smallerDimension = Math.min(canvasWidth, canvasHeight);
-        baseScaleRef.current = smallerDimension / 1095;
+        transformRef.current.scale = smallerDimension / 1095;
 
         if (segments.length === 0) {
             transformRef.current.x = canvasWidth / 2;
             transformRef.current.y = canvasHeight / 2;
         }
     }, [canvasSize, segments.length]);
-
-    useEffect(() => {
-        const canvas = canvasRef.current;
-        if (!canvas) return;
-
-        const handleWheel = (e: WheelEvent) => {
-            e.preventDefault();
-            const zoomAmount = e.deltaY * -0.001;
-            setZoom(prevZoom => {
-                const newZoom = prevZoom + zoomAmount;
-                // Clamp the zoom level between min and max values
-                return Math.max(0.5, Math.min(3, newZoom));
-            });
-        };
-
-        canvas.addEventListener('wheel', handleWheel, { passive: false });
-
-        return () => {
-            canvas.removeEventListener('wheel', handleWheel);
-        };
-    }, []); // Only runs once to attach the listener
     
     useEffect(() => {
-        lastTimestamp.current = performance.now();
-        animationFrameId.current = requestAnimationFrame(gameLoop);
+        animationFrameId.current = requestAnimationFrame(draw);
         return () => {
             if (animationFrameId.current) {
                 cancelAnimationFrame(animationFrameId.current);
             }
         };
-    }, [gameLoop]);
+    }, [draw]);
 
     const handleGenerate = () => {
         setIsLoading(true);
@@ -1464,20 +666,6 @@ const App: React.FC = () => {
             const currentSeed = seed || Date.now().toString();
             const result = generate(currentSeed);
             setSegments(result.segments);
-            
-            const blocksData = findCityBlocks(result.segments);
-            setBlocks(blocksData);
-            
-            const buildings = generateAllBuildings(blocksData.map(b => b.points));
-            setBuildings(buildings);
-
-            if (buildings.length > 0 && characterState.current) {
-                const b = buildings[Math.floor(buildings.length / 2)]; // Pick a building near the middle
-                const centerX = b.footprint[0].x + (b.footprint[1].x - b.footprint[0].x) / 2;
-                const centerY = b.footprint[0].y + (b.footprint[3].y - b.footprint[0].y) / 2;
-                characterState.current.position = { x: centerX, y: centerY };
-            }
-
             setLogs(result.logs);
             setIsLoading(false);
         }, 50);
@@ -1485,7 +673,6 @@ const App: React.FC = () => {
 
     useEffect(() => {
       handleGenerate();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
     }, []);
 
     return (
@@ -1506,34 +693,6 @@ const App: React.FC = () => {
                 <button onClick={handleGenerate} disabled={isLoading}>
                     Generate
                 </button>
-                 <div className="input-group">
-                    <label htmlFor="zoom">Zoom:</label>
-                    <input
-                        id="zoom"
-                        type="range"
-                        min="0.5"
-                        max="3"
-                        step="0.1"
-                        value={zoom}
-                        onChange={(e) => setZoom(parseFloat(e.target.value))}
-                        disabled={isLoading}
-                        aria-label="Zoom control"
-                    />
-                    <span className="zoom-value">{zoom.toFixed(1)}x</span>
-                </div>
-                <div className="input-group">
-                    <input
-                        id="show-buildings"
-                        type="checkbox"
-                        checked={showBuildings}
-                        onChange={(e) => setShowBuildings(e.target.checked)}
-                        disabled={isLoading}
-                    />
-                    <label htmlFor="show-buildings">Show Buildings</label>
-                </div>
-                <div className="char-position">
-                    X: {charPos.x.toFixed(0)} | Y: {charPos.y.toFixed(0)}
-                </div>
             </div>
             <div className="canvas-container">
                 {isLoading && (
@@ -1543,10 +702,6 @@ const App: React.FC = () => {
                 )}
                 <canvas
                     ref={canvasRef}
-                />
-                <canvas
-                    ref={minimapCanvasRef}
-                    className="minimap"
                 />
             </div>
             {logs.length > 0 && (
