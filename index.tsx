@@ -867,33 +867,32 @@ function insetPolygon(
 
         const intersection = lineLineIntersection(prevLine[0], prevLine[1], currLine[0], currLine[1]);
 
-        if (intersection) {
-            const miterLength = math.length(p_curr, intersection);
+        if (intersection && math.length(p_curr, intersection) <= avgDistance * miterLimit) {
+            // Miter join is within limits, proceed as before
+            const p_prev = polygon[(i + polygon.length - 1) % polygon.length];
+            const p_next = polygon[(i + 1) % polygon.length];
+            const v1 = math.subtractPoints(p_prev, p_curr);
+            const v2 = math.subtractPoints(p_next, p_curr);
+            const dot = v1.x * v2.x + v1.y * v2.y;
+            const len1 = Math.sqrt(v1.x * v1.x + v1.y * v1.y);
+            const len2 = Math.sqrt(v2.x * v2.x + v2.y * v2.y);
 
-            if (miterLength > avgDistance * miterLimit) {
-                insetVertices.push({ point: prevLine[1], radius: 0 });
-                insetVertices.push({ point: currLine[0], radius: 0 });
-            } else {
-                const p_prev = polygon[(i + polygon.length - 1) % polygon.length];
-                const p_next = polygon[(i + 1) % polygon.length];
-                const v1 = math.subtractPoints(p_prev, p_curr);
-                const v2 = math.subtractPoints(p_next, p_curr);
-                const dot = v1.x * v2.x + v1.y * v2.y;
-                const len1 = Math.sqrt(v1.x * v1.x + v1.y * v1.y);
-                const len2 = Math.sqrt(v2.x * v2.x + v2.y * v2.y);
-                
-                let dynamicRadius = baseRadius;
-                if (len1 > 0 && len2 > 0) {
-                    const cosAngle = Math.max(-1, Math.min(1, dot / (len1 * len2)));
-                    const angle = Math.acos(cosAngle);
-                    const scale = angle / (Math.PI / 2);
-                    dynamicRadius = baseRadius * Math.min(scale, 1.5);
-                }
-                insetVertices.push({ point: intersection, radius: dynamicRadius });
+            let dynamicRadius = baseRadius;
+            if (len1 > 0 && len2 > 0) {
+                const cosAngle = Math.max(-1, Math.min(1, dot / (len1 * len2)));
+                const angle = Math.acos(cosAngle);
+                const scale = angle / (Math.PI / 2);
+                dynamicRadius = baseRadius * Math.min(scale, 1.5);
             }
+            insetVertices.push({ point: intersection, radius: dynamicRadius });
         } else {
-            insetVertices.push({ point: prevLine[1], radius: 0 });
-            insetVertices.push({ point: currLine[0], radius: 0 });
+            // Miter limit exceeded or lines are parallel, create a rounded cap instead of a bevel
+            const fallbackRadius = avgDistance * 0.6;
+            const midpoint = {
+                x: (prevLine[1].x + currLine[0].x) / 2,
+                y: (prevLine[1].y + currLine[0].y) / 2
+            };
+            insetVertices.push({ point: midpoint, radius: fallbackRadius });
         }
     }
     return insetVertices;
@@ -941,7 +940,7 @@ function drawRoundedPolygon(ctx: CanvasRenderingContext2D, polygonInfo: { point:
         const dot = v1x * v2x + v1y * v2y;
         const angle = Math.acos(Math.max(-1, Math.min(1, dot / (segLen1 * segLen2))));
         
-        if (angle > Math.PI - 0.01 || angle === 0) { // No radius for straight or reflex angles
+        if (angle > Math.PI - 0.01) { // No radius for straight or reflex angles
             tangents.push({ p: p1, t1: p1, t2: p1, radius: 0 });
             continue;
         }
