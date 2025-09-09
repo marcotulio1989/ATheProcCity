@@ -237,7 +237,120 @@ const math = {
     }
 };
 
-// --- ROAD GENERATION LOGIC ---
+// --- CHARACTER LOGIC ---
+const useCharacter = () => {
+    const [isImageLoaded, setIsImageLoaded] = useState(false);
+    const characterState = useRef({
+        position: { x: 0, y: 0 } as Point,
+        speed: 400, // units per second
+        image: null as HTMLImageElement | null,
+        rotation: 0,
+    });
+
+    const keys = useRef({
+        ArrowUp: false,
+        ArrowDown: false,
+        ArrowLeft: false,
+        ArrowRight: false,
+    });
+
+    useEffect(() => {
+        const image = new Image();
+        image.src = 'https://raw.githubusercontent.com/eerkek/personal-code-assistant-app/main/assets/car.png';
+        image.onload = () => {
+            characterState.current.image = image;
+            setIsImageLoaded(true);
+        };
+
+        const handleKeyDown = (e: KeyboardEvent) => {
+            if (e.key in keys.current) {
+                (keys.current as any)[e.key] = true;
+            }
+        };
+
+        const handleKeyUp = (e: KeyboardEvent) => {
+            if (e.key in keys.current) {
+                (keys.current as any)[e.key] = false;
+            }
+        };
+
+        window.addEventListener('keydown', handleKeyDown);
+        window.addEventListener('keyup', handleKeyUp);
+
+        return () => {
+            window.removeEventListener('keydown', handleKeyDown);
+            window.removeEventListener('keyup', handleKeyUp);
+        };
+    }, []);
+
+    const updateCharacter = (deltaTime: number) => {
+        const state = characterState.current;
+        const keysPressed = keys.current;
+
+        if (!state.position) {
+            return;
+        }
+
+        const speed = state.speed * deltaTime;
+        let screen_dx = 0;
+        let screen_dy = 0;
+
+        if (keysPressed.ArrowUp) {
+            screen_dy = -1;
+        }
+        if (keysPressed.ArrowDown) {
+            screen_dy = 1;
+        }
+        if (keysPressed.ArrowLeft) {
+            screen_dx = -1;
+        }
+        if (keysPressed.ArrowRight) {
+            screen_dx = 1;
+        }
+
+        if (screen_dx !== 0 || screen_dy !== 0) {
+            const screen_vec = { x: screen_dx, y: screen_dy };
+            const world_vec = math.fromIsometric(screen_vec);
+
+            const len = Math.sqrt(world_vec.x * world_vec.x + world_vec.y * world_vec.y);
+            if (len > 0) {
+                const dx = (world_vec.x / len) * speed;
+                const dy = (world_vec.y / len) * speed;
+
+                state.position.x += dx;
+                state.position.y += dy;
+                state.rotation = Math.atan2(dy, dx) * 180 / Math.PI;
+            }
+        }
+    };
+
+    const drawCharacter = (ctx: CanvasRenderingContext2D, transform: { x: number, y: number, scale: number }) => {
+        const state = characterState.current;
+        if (!state.position) return;
+
+        const carSize = 64;
+        const isoPos = math.toIsometric(state.position);
+
+        ctx.save();
+        ctx.translate(isoPos.x, isoPos.y);
+        ctx.rotate(state.rotation * Math.PI / 180);
+
+        if (state.image) {
+            ctx.drawImage(state.image, -carSize / 2, -carSize / 2, carSize, carSize);
+        } else {
+            // Fallback circle
+            ctx.beginPath();
+            ctx.arc(0, 0, carSize / 2, 0, 2 * Math.PI);
+            ctx.fillStyle = 'blue';
+            ctx.fill();
+        }
+        ctx.restore();
+    };
+
+    return { updateCharacter, drawCharacter, characterState };
+};
+
+// --- REACT COMPONENT ---
 
 const defaultConfig = {
     HIGHWAY_SEGMENT_WIDTH: 120,
@@ -569,12 +682,16 @@ const App: React.FC = () => {
     const [seed, setSeed] = useState<string>('city');
     const [segments, setSegments] = useState<Segment[]>([]);
     const [logs, setLogs] = useState<string[]>([]);
+    const [charPos, setCharPos] = useState<Point>({ x: 0, y: 0 });
     const [isLoading, setIsLoading] = useState<boolean>(false);
     const [canvasSize, setCanvasSize] = useState({ width: 0, height: 0 });
     
     const canvasRef = useRef<HTMLCanvasElement>(null);
     const transformRef = useRef({ x: 0, y: 0, scale: 1 });
     const animationFrameId = useRef<number | null>(null);
+    const lastTimestamp = useRef(0);
+
+    const { updateCharacter, drawCharacter, characterState } = useCharacter();
 
     const draw = useCallback(() => {
         const canvas = canvasRef.current;
@@ -619,9 +736,11 @@ const App: React.FC = () => {
 
         drawRoads();
 
+        drawCharacter(ctx, transformRef.current);
+
         ctx.restore();
 
-    }, [segments, canvasSize]);
+    }, [segments, canvasSize, drawCharacter, characterState]);
 
     useEffect(() => {
         const canvas = canvasRef.current;
@@ -649,15 +768,36 @@ const App: React.FC = () => {
             transformRef.current.y = canvasHeight / 2;
         }
     }, [canvasSize, segments.length]);
-    
+
+    const gameLoop = useCallback((timestamp: number) => {
+        const deltaTime = (timestamp - lastTimestamp.current) / 1000;
+        lastTimestamp.current = timestamp;
+
+        updateCharacter(deltaTime);
+        setCharPos({ ...characterState.current.position });
+
+        if (characterState.current.position) {
+            const { width: canvasWidth, height: canvasHeight } = canvasSize;
+            const scale = transformRef.current.scale;
+            const isoPos = math.toIsometric(characterState.current.position);
+            transformRef.current.x = canvasWidth / 2 - isoPos.x * scale;
+            transformRef.current.y = canvasHeight / 2 - isoPos.y * scale;
+        }
+
+        draw();
+
+        animationFrameId.current = requestAnimationFrame(gameLoop);
+    }, [draw, updateCharacter, canvasSize, characterState, setCharPos]);
+
     useEffect(() => {
-        animationFrameId.current = requestAnimationFrame(draw);
+        lastTimestamp.current = performance.now();
+        animationFrameId.current = requestAnimationFrame(gameLoop);
         return () => {
             if (animationFrameId.current) {
                 cancelAnimationFrame(animationFrameId.current);
             }
         };
-    }, [draw]);
+    }, [gameLoop]);
 
     const handleGenerate = () => {
         setIsLoading(true);
@@ -666,6 +806,10 @@ const App: React.FC = () => {
             const currentSeed = seed || Date.now().toString();
             const result = generate(currentSeed);
             setSegments(result.segments);
+            if (result.segments.length > 0 && characterState.current) {
+                const seg = result.segments[Math.floor(result.segments.length / 2)];
+                characterState.current.position = seg.r.start;
+            }
             setLogs(result.logs);
             setIsLoading(false);
         }, 50);
@@ -693,6 +837,9 @@ const App: React.FC = () => {
                 <button onClick={handleGenerate} disabled={isLoading}>
                     Generate
                 </button>
+                <div className="char-position">
+                    X: {charPos.x.toFixed(0)} | Y: {charPos.y.toFixed(0)}
+                </div>
             </div>
             <div className="canvas-container">
                 {isLoading && (
